@@ -11,8 +11,7 @@
     python update.py --dry-run  — показать что изменится, не сохраняя
     python update.py --report   — вывести отчёт о доступности сайтов
 
-Зависимости:
-    pip install requests beautifulsoup4
+Зависимости: нет (стандартная библиотека Python)
 """
 
 import json
@@ -21,17 +20,12 @@ import os
 import re
 import time
 import hashlib
+import ssl
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
-
-try:
-    import requests
-    from bs4 import BeautifulSoup
-except ImportError:
-    print("Установите зависимости: pip install requests beautifulsoup4")
-    sys.exit(1)
-
 
 SCRIPT_DIR = Path(__file__).parent
 DATA_FILE = SCRIPT_DIR / "festivals.json"
@@ -65,11 +59,6 @@ PAUSED_KEYWORDS = [
     "отложен", " задержк",
 ]
 
-HEADERS_TO_CHECK = [
-    "title", "h1", "h2", "h3",
-    "article", "main", "section",
-]
-
 
 def load_data() -> dict:
     with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -83,7 +72,7 @@ def save_data(data: dict):
 
 def get_cache_path(festival_id: int) -> Path:
     CACHE_DIR.mkdir(exist_ok=True)
-    return CACHE_DIR / f"{festival_id}.txt"
+    return CACHE_DIR / ("%d.txt" % festival_id)
 
 
 def get_cache_hash(festival_id: int) -> Optional[str]:
@@ -100,27 +89,32 @@ def set_cache_hash(festival_id: int, content_hash: str):
 
 def fetch_page(url: str) -> Optional[str]:
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT, allow_redirects=True)
-        resp.raise_for_status()
-        resp.encoding = resp.apparent_encoding or "utf-8"
-        return resp.text
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        req = urllib.request.Request(url, headers=HEADERS)
+        resp = urllib.request.urlopen(req, timeout=TIMEOUT, context=ctx)
+        data = resp.read()
+
+        encoding = resp.headers.get_content_charset() or "utf-8"
+        try:
+            return data.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            return data.decode("utf-8", errors="ignore")
     except Exception:
         return None
 
 
 def extract_text(html: str) -> str:
-    soup = BeautifulSoup(html, "html.parser")
-
-    for tag in soup(["script", "style", "noscript", "footer", "nav"]):
-        tag.decompose()
-
-    parts = []
-    for el in soup.find_all(["title", "h1", "h2", "h3", "p", "span", "div"]):
-        text = el.get_text(separator=" ", strip=True)
-        if text:
-            parts.append(text)
-
-    return "\n".join(parts[:500])
+    text = re.sub(r'<script[^>]*>.*?</script>', ' ', html, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<style[^>]*>.*?</style>', ' ', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<noscript[^>]*>.*?</noscript>', ' ', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<footer[^>]*>.*?</footer>', ' ', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<nav[^>]*>.*?</nav>', ' ', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text[:10000].strip()
 
 
 def detect_status(text: str) -> dict:
@@ -201,7 +195,7 @@ def check_festival(festival: dict, dry_run: bool = False) -> dict:
     old_status = festival.get("status", "unknown")
     if new_status != old_status and new_status != "unknown":
         result["changed"] = True
-        result["status"] = f"{old_status} → {new_status}"
+        result["status"] = "%s -> %s" % (old_status, new_status)
         if not dry_run:
             festival["status"] = new_status
             set_cache_hash(fid, content_hash)
@@ -213,7 +207,7 @@ def check_festival(festival: dict, dry_run: bool = False) -> dict:
     return result
 
 
-def run_update(festival_ids: list = None, dry_run: bool = False, report: bool = False):
+def run_update(festival_ids=None, dry_run=False, report=False):
     data = load_data()
     festivals = data["festivals"]
 
@@ -225,17 +219,18 @@ def run_update(festival_ids: list = None, dry_run: bool = False, report: bool = 
 
     for i, festival in enumerate(festivals, 1):
         name = festival["name"]
-        print(f"[{i}/{total}] {name}...", end=" ", flush=True)
+        sys.stdout.write("[%d/%d] %s... " % (i, total, name))
+        sys.stdout.flush()
         result = check_festival(festival, dry_run=dry_run)
         results.append(result)
 
         if result["error"]:
-            print(f"✕ {result['error']}")
+            print("x %s" % result["error"])
         elif result["reachable"]:
             if result["changed"]:
-                print(f"↻ {result['status']}")
+                print("~ %s" % result["status"])
             else:
-                print("✓ без изменений")
+                print("ok")
         else:
             print("?")
 
@@ -246,30 +241,30 @@ def run_update(festival_ids: list = None, dry_run: bool = False, report: bool = 
         save_data(data)
 
     print("\n" + "=" * 50)
-    print("ОТЧЁТ")
+    print("REPORT")
     print("=" * 50)
 
     reachable = sum(1 for r in results if r["reachable"])
     unreachable = sum(1 for r in results if not r["reachable"] and r["error"])
     changed = sum(1 for r in results if r["changed"])
 
-    print(f"Всего проверено:     {len(results)}")
-    print(f"Сайт доступен:       {reachable}")
-    print(f"Сайт недоступен:     {unreachable}")
+    print("Total checked:   %d" % len(results))
+    print("Site available:  %d" % reachable)
+    print("Site unavailable:%d" % unreachable)
     if not dry_run:
-        print(f"Обновлено:           {changed}")
+        print("Updated:         %d" % changed)
 
     if report:
-        print("\nДЕТАЛИ:")
+        print("\nDETAILS:")
         for r in results:
-            status_icon = "✓" if r["reachable"] else "✕"
-            changed_icon = "↻" if r["changed"] else " "
-            print(f"  [{status_icon}{changed_icon}] id={r['id']} {r['name']}: {r.get('error') or r['status']}")
+            status_icon = "v" if r["reachable"] else "x"
+            changed_icon = "~" if r["changed"] else " "
+            print("  [%s%s] id=%d %s: %s" % (status_icon, changed_icon, r["id"], r["name"], r.get("error") or r["status"]))
             if r.get("detection") and r["detection"]["keywords_found"]:
-                print(f"       Ключевые слова: {', '.join(r['detection']['keywords_found'][:5])}")
+                print("       Keywords: %s" % ", ".join(r["detection"]["keywords_found"][:5]))
 
     if dry_run:
-        print("\n⚠ DRY RUN — изменения НЕ сохранены")
+        print("\nDRY RUN - changes NOT saved")
 
     return results
 
@@ -306,9 +301,9 @@ if __name__ == "__main__":
         if idx + 1 < len(args):
             festival_ids = [int(args[idx + 1])]
 
-    print("КИНЕМАТОГРАФИСТЫ.РФ — автообновление данных")
-    print(f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    print(f"Режим: {'dry-run' if dry_run else 'обновление'}")
+    print("KINEMATOGRAFISTY.RF - auto-update")
+    print("Date: %s" % datetime.now().strftime("%Y-%m-%d %H:%M"))
+    print("Mode: %s" % ("dry-run" if dry_run else "update"))
     print()
 
     results = run_update(festival_ids=festival_ids, dry_run=dry_run, report=report)

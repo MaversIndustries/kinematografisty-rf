@@ -1,43 +1,27 @@
 #!/usr/bin/env python3
 """
-КИНЕМАТОГРАФИСТЫ.РФ — Telegram-бот для напоминаний о дедлайнах.
+КИНЕМАТОГРАФИСТЫ.РФ — Telegram бот для напоминаний о дедлайнах.
 
-Функции:
-  /start     — подписка на уведомления
-  /stop      — отписка
-  /list      — список отслеживаемых фестивалей
-  /add ID    — добавить фестиваль в отслеживание
-  /remove ID — убрать фестиваль из отслеживания
-  /status    — ближайшие дедлайны
-  /help      — справка
+Зависимости: нет (стандартная библиотека Python)
 
 Настройка:
-  1. Создайте бота через @BotFather, получите токен
-  2. Создайте файл config.json (см. config.example.json)
-  3. Запустите: python bot.py
-
-Зависимости:
-  pip install python-telegram-bot requests
+  1. Создай бота через @BotFather, получи токен
+  2. Создай bot_config.json: {"token": "YOUR_TOKEN"}
+  3. Запусти: python bot.py
 """
 
 import json
 import sys
 import os
+import time
 import logging
+import ssl
+import urllib.request
+import urllib.error
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
-
-try:
-    from telegram import Update, BotCommand
-    from telegram.ext import (
-        Application, CommandHandler, MessageHandler,
-        ContextTypes, filters
-    )
-except ImportError:
-    print("Установите зависимости: pip install python-telegram-bot requests")
-    sys.exit(1)
-
 
 SCRIPT_DIR = Path(__file__).parent
 DATA_FILE = SCRIPT_DIR / "festivals.json"
@@ -45,6 +29,7 @@ CONFIG_FILE = SCRIPT_DIR / "bot_config.json"
 SUBSCRIBERS_FILE = SCRIPT_DIR / ".bot_subscribers.json"
 
 REMIND_DAYS = [30, 14, 7, 3, 1]
+TELEGRAM_API = "https://api.telegram.org/bot%s"
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -53,37 +38,59 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def load_config() -> dict:
+def load_config():
     if CONFIG_FILE.exists():
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
 
 
-def load_festivals() -> list:
+def load_festivals():
     with open(DATA_FILE, "r", encoding="utf-8") as f:
         return json.load(f)["festivals"]
 
 
-def load_subscribers() -> dict:
+def load_subscribers():
     if SUBSCRIBERS_FILE.exists():
         with open(SUBSCRIBERS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return {"users": {}}
 
 
-def save_subscribers(data: dict):
+def save_subscribers(data):
     with open(SUBSCRIBERS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def get_user_tracking(user_id: int) -> list:
+def tg_api(token, method, params=None):
+    url = TELEGRAM_API % token + "/" + method
+    data = None
+    if params:
+        data = urllib.parse.urlencode(params).encode("utf-8")
+    try:
+        ctx = ssl.create_default_context()
+        req = urllib.request.Request(url, data=data)
+        resp = urllib.request.urlopen(req, timeout=30, context=ctx)
+        return json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        logger.error("Telegram API error: %s" % e)
+        return None
+
+
+def send_message(token, chat_id, text):
+    tg_api(token, "sendMessage", {
+        "chat_id": chat_id,
+        "text": text,
+    })
+
+
+def get_user_tracking(user_id):
     subs = load_subscribers()
     user = subs["users"].get(str(user_id), {})
     return user.get("track", [])
 
 
-def set_user_tracking(user_id: int, track: list):
+def set_user_tracking(user_id, track):
     subs = load_subscribers()
     uid = str(user_id)
     if uid not in subs["users"]:
@@ -92,37 +99,19 @@ def set_user_tracking(user_id: int, track: list):
     save_subscribers(subs)
 
 
-def add_user_tracking(user_id: int, festival_id: int) -> bool:
-    track = get_user_tracking(user_id)
-    if festival_id not in track:
-        track.append(festival_id)
-        set_user_tracking(user_id, track)
-        return True
-    return False
-
-
-def remove_user_tracking(user_id: int, festival_id: int) -> bool:
+def toggle_user_tracking(user_id, festival_id):
     track = get_user_tracking(user_id)
     if festival_id in track:
         track.remove(festival_id)
         set_user_tracking(user_id, track)
-        return True
-    return False
-
-
-def toggle_user_tracking(user_id: int, festival_id: int) -> tuple:
-    track = get_user_tracking(user_id)
-    if festival_id in track:
-        track.remove(festival_id)
-        set_user_tracking(user_id, track)
-        return False, "removed"
+        return False
     else:
         track.append(festival_id)
         set_user_tracking(user_id, track)
-        return True, "added"
+        return True
 
 
-def get_festival_by_id(festival_id: int) -> Optional[dict]:
+def get_festival_by_id(festival_id):
     festivals = load_festivals()
     for f in festivals:
         if f["id"] == festival_id:
@@ -130,249 +119,213 @@ def get_festival_by_id(festival_id: int) -> Optional[dict]:
     return None
 
 
-def days_until_deadline(date_str: str) -> Optional[int]:
+def days_until_deadline(date_str):
     try:
         deadline = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         now = datetime.now(timezone.utc)
-        delta = deadline - now
-        return delta.days
+        return (deadline - now).days
     except Exception:
         return None
 
 
-def format_festival_brief(f: dict) -> str:
-    lines = [
-        f"🎬 *{_escape_md(f['name'])}*",
-        f"📍 {_escape_md(f['city'])}, {f['country']}",
-        f"🎯 {_escape_md(f['focus'])}",
-    ]
-    if f.get("festivalDates"):
-        lines.append(f"📅 {_escape_md(f['festivalDates'])}")
-    if f.get("website"):
-        lines.append(f"🔗 {f['website']}")
-    return "\n".join(lines)
-
-
-def format_deadline_msg(f: dict, days: int) -> str:
+def format_deadline_msg(f, days):
     if days < 0:
-        time_left = "дедлайн прошёл"
+        time_left = "deadline proshel"
     elif days == 0:
-        time_left = "⚠️ дедлайн СЕГОДНЯ"
+        time_left = "DEDLAYN SEGODNYA"
     elif days == 1:
-        time_left = "⚠️ дедлайн ЗАВТРА"
+        time_left = "DEDLAYN ZAVTRA"
     else:
-        time_left = f"через {days} дн"
+        time_left = "cherez %d dn" % days
 
-    msg = f"🎬 *{_escape_md(f['name'])}*\n"
-    msg += f"📍 {_escape_md(f['city'])}\n"
-    msg += f"⏰ {_escape_md(time_left)}\n"
+    msg = "%s\n" % f["name"]
+    msg += "%s\n" % f["city"]
+    msg += "%s\n" % time_left
     if f.get("submissionDeadline"):
-        msg += f"📅 Дедлайн: {f['submissionDeadline']}\n"
+        msg += "Dedlayn: %s\n" % f["submissionDeadline"]
     if f.get("website"):
-        msg += f"🔗 {f['website']}\n"
+        msg += "%s\n" % f["website"]
     return msg
 
 
-def _escape_md(text: str) -> str:
-    specials = ["_", "*", "[", "]", "(", ")", "~", "`", ">", "#", "+", "-", "=", "|", "{", "}", ".", "!"]
-    for ch in specials:
-        text = text.replace(ch, f"\\{ch}")
-    return text
+def handle_command(token, chat_id, text):
+    text = text.strip().lower()
+    args = text.split()
 
-
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    subs = load_subscribers()
-    uid = str(user_id)
-
-    if uid not in subs["users"]:
-        subs["users"][uid] = {
-            "track": [],
-            "username": update.effective_user.username or "",
-            "first_name": update.effective_user.first_name or "",
-            "subscribed_at": datetime.now(timezone.utc).isoformat(),
-        }
-        save_subscribers(subs)
-
-    text = (
-        "👋 Добро пожаловать в КИНЕМАТОГРАФИСТЫ.РФ!\n\n"
-        "Я напоминаю о дедлайнах подачи заявок на кинофестивали.\n\n"
-        "📌 *Команды:*\n"
-        "/list — все фестивали\n"
-        "/add ID — добавить в отслеживание\n"
-        "/remove ID — убрать из отслеживания\n"
-        "/track — мои отслеживаемые\n"
-        "/status — ближайшие дедлайны\n"
-        "/help — справка\n\n"
-        "Начните с /list чтобы выбрать фестивали."
-    )
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-
-async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    subs = load_subscribers()
-    uid = str(user_id)
-
-    if uid in subs["users"]:
-        del subs["users"][uid]
-        save_subscribers(subs)
-
-    await update.message.reply_text("👋 Вы отписаны от уведомлений.")
-
-
-async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    festivals = load_festivals()
-    track = get_user_tracking(update.effective_user.id)
-
-    lines = ["📋 *Все фестивали:*\n"]
-    for f in festivals:
-        marker = "✅" if f["id"] in track else "  "
-        status_emoji = {"active": "🟢", "paused": "🟡", "cancelled": "🔴", "unknown": "⚪"}.get(f["status"], "⚪")
-        dl = f.get("submissionDeadline", "")
-        dl_info = f" | ⏰ {dl}" if dl else ""
-        lines.append(f"{marker} `{f['id']:>2}` {status_emoji} {_escape_md(f['name'])} — {_escape_md(f['city'])}{dl_info}")
-
-    text = "\n".join(lines)
-    if len(text) > 4000:
-        text = text[:3900] + "\n\n... (список обрезан)"
-
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-
-async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Использование: /add ID\nID фестиваля из списка /list")
+    if not args:
         return
 
-    try:
-        fid = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("ID должен быть числом.")
-        return
+    cmd = args[0]
 
-    f = get_festival_by_id(fid)
-    if not f:
-        await update.message.reply_text(f"Фестиваль с ID {fid} не найден.")
-        return
+    if cmd in ("/start", "начать"):
+        subs = load_subscribers()
+        uid = str(chat_id)
+        if uid not in subs["users"]:
+            subs["users"][uid] = {
+                "track": [],
+                "subscribed_at": datetime.now(timezone.utc).isoformat(),
+            }
+            save_subscribers(subs)
 
-    added, action = toggle_user_tracking(update.effective_user.id, fid)
-    if added:
-        await update.message.reply_text(
-            f"✅ Добавлено: {_escape_md(f['name'])}\n"
-            f"Буду напоминать о дедлайне ({f.get('submissionDeadline', 'не задан')}).",
-            parse_mode="Markdown"
+        send_message(token, chat_id,
+            "Добro pozhalovat' v KINEMATOGRAFISTY.RF!\n\n"
+            "Ya napominau o dedlaynah podachi zayavok na kinofestivali.\n\n"
+            "Komandy:\n"
+            "/list — vse festivali\n"
+            "/add ID — dobavit' v otslezhivanie\n"
+            "/remove ID — ubrat'\n"
+            "/track — moi otslezhivaemye\n"
+            "/status — blizhajshie dedlayny\n"
+            "/help — spravka"
         )
-    else:
-        await update.message.reply_text(f"❌ Убрано: {_escape_md(f['name'])}", parse_mode="Markdown")
 
+    elif cmd in ("/stop", "стоп"):
+        subs = load_subscribers()
+        uid = str(chat_id)
+        if uid in subs["users"]:
+            del subs["users"][uid]
+            save_subscribers(subs)
+        send_message(token, chat_id, "Vy otpisany ot uvedomlenij.")
 
-async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Использование: /remove ID")
-        return
+    elif cmd in ("/list", "список"):
+        festivals = load_festivals()
+        track = get_user_tracking(chat_id)
 
-    try:
-        fid = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("ID должен быть числом.")
-        return
+        lines = ["Vse festivali:\n"]
+        for f in festivals:
+            marker = "+" if f["id"] in track else " "
+            dl = f.get("submissionDeadline", "")
+            dl_info = " | %s" % dl if dl else ""
+            lines.append("%s %2d. %s — %s%s" % (marker, f["id"], f["name"], f["city"], dl_info))
 
-    f = get_festival_by_id(fid)
-    if not f:
-        await update.message.reply_text(f"Фестиваль с ID {fid} не найден.")
-        return
+        text_out = "\n".join(lines)
+        if len(text_out) > 4000:
+            text_out = text_out[:3900] + "\n..."
+        send_message(token, chat_id, text_out)
 
-    removed = remove_user_tracking(update.effective_user.id, fid)
-    if removed:
-        await update.message.reply_text(f"❌ Убрано: {_escape_md(f['name'])}", parse_mode="Markdown")
-    else:
-        await update.message.reply_text(f"Этот фестиваль не в вашем списке.")
+    elif cmd == "/add" or cmd == "добавить":
+        if len(args) < 2:
+            send_message(token, chat_id, "Ispol'zovanie: /add ID")
+            return
 
+        try:
+            fid = int(args[1])
+        except ValueError:
+            send_message(token, chat_id, "ID dolzhen byt' chislom.")
+            return
 
-async def cmd_track(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    track = get_user_tracking(update.effective_user.id)
-    if not track:
-        await update.message.reply_text("📭 Вы пока не отслеживаете ни одного фестиваля.\nИспользуйте /list чтобы выбрать.")
-        return
-
-    lines = ["📌 *Ваши фестивали:*\n"]
-    for fid in track:
         f = get_festival_by_id(fid)
-        if f:
-            dl = f.get("submissionDeadline")
-            if dl:
-                days = days_until_deadline(dl)
-                if days is not None:
-                    if days < 0:
-                        dl_info = "⏰ дедлайн прошёл"
-                    elif days == 0:
-                        dl_info = "🔴 дедлайн СЕГОДНЯ"
-                    elif days <= 7:
-                        dl_info = f"🟡 через {days} дн"
+        if not f:
+            send_message(token, chat_id, "Festival s ID %d ne nayden." % fid)
+            return
+
+        added = toggle_user_tracking(chat_id, fid)
+        if added:
+            send_message(token, chat_id,
+                "Dobavleno: %s\nBudu napominat' o dedlayne (%s)." % (
+                    f["name"], f.get("submissionDeadline", "ne zadan")))
+        else:
+            send_message(token, chat_id, "Ubano: %s" % f["name"])
+
+    elif cmd == "/remove" or cmd == "убрать":
+        if len(args) < 2:
+            send_message(token, chat_id, "Ispol'zovanie: /remove ID")
+            return
+
+        try:
+            fid = int(args[1])
+        except ValueError:
+            send_message(token, chat_id, "ID dolzhen byt' chislom.")
+            return
+
+        f = get_festival_by_id(fid)
+        if not f:
+            send_message(token, chat_id, "Festival s ID %d ne nayden." % fid)
+            return
+
+        removed = toggle_user_tracking(chat_id, fid)
+        if not removed:
+            send_message(token, chat_id, "Ubano: %s" % f["name"])
+        else:
+            send_message(token, chat_id, "Etot festival ne v vashem spiske.")
+
+    elif cmd in ("/track", "мои"):
+        track = get_user_tracking(chat_id)
+        if not track:
+            send_message(token, chat_id, "Vy poka ne otslezhivaete ni odnogo festivala.\nIspol'zujte /list.")
+            return
+
+        lines = ["Vashi festivali:\n"]
+        for fid in track:
+            f = get_festival_by_id(fid)
+            if f:
+                dl = f.get("submissionDeadline")
+                if dl:
+                    days = days_until_deadline(dl)
+                    if days is not None:
+                        if days < 0:
+                            dl_info = "dedlayn proshel"
+                        elif days == 0:
+                            dl_info = "DEDLAYN SEGODNYA"
+                        elif days <= 7:
+                            dl_info = "cherez %d dn" % days
+                        else:
+                            dl_info = "cherez %d dn" % days
                     else:
-                        dl_info = f"через {days} дн"
+                        dl_info = dl
                 else:
-                    dl_info = dl
-            else:
-                dl_info = "дедлайн не задан"
+                    dl_info = "dedlayn ne zadan"
+                lines.append("%2d. %s — %s" % (f["id"], f["name"], dl_info))
 
-            status_emoji = {"active": "🟢", "paused": "🟡", "cancelled": "🔴", "unknown": "⚪"}.get(f["status"], "⚪")
-            lines.append(f"`{f['id']:>2}` {status_emoji} {_escape_md(f['name'])} — {dl_info}")
+        send_message(token, chat_id, "\n".join(lines))
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    elif cmd in ("/status", "дедлайны"):
+        track = get_user_tracking(chat_id)
+        if not track:
+            send_message(token, chat_id, "Otslezhivaemyh festivalov net.\nIspol'zujte /list.")
+            return
 
+        festivals = load_festivals()
+        tracked = [f for f in festivals if f["id"] in track and f.get("submissionDeadline")]
 
-async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    track = get_user_tracking(update.effective_user.id)
-    if not track:
-        await update.message.reply_text("📭 Отслеживаемых фестивалей нет.\nИспользуйте /list.")
-        return
+        if not tracked:
+            send_message(token, chat_id, "U otslezhivaemyh festivalov net dedlaynov.")
+            return
 
-    festivals = load_festivals()
-    tracked = [f for f in festivals if f["id"] in track and f.get("submissionDeadline")]
+        upcoming = []
+        for f in tracked:
+            days = days_until_deadline(f["submissionDeadline"])
+            if days is not None and days >= 0:
+                upcoming.append((days, f))
 
-    if not tracked:
-        await update.message.reply_text("📅 У отслеживаемых фестивалей нет заданных дедлайнов.")
-        return
+        upcoming.sort(key=lambda x: x[0])
 
-    upcoming = []
-    for f in tracked:
-        days = days_until_deadline(f["submissionDeadline"])
-        if days is not None and days >= 0:
-            upcoming.append((days, f))
+        if not upcoming:
+            send_message(token, chat_id, "Blizhajshih dedlaynov net (vse proshli).")
+            return
 
-    upcoming.sort(key=lambda x: x[0])
+        lines = ["Blizhajshie dedlayny:\n"]
+        for days, f in upcoming[:10]:
+            lines.append(format_deadline_msg(f, days))
 
-    if not upcoming:
-        await update.message.reply_text("📅 Ближайших дедлайнов нет (все прошли).")
-        return
+        send_message(token, chat_id, "\n\n".join(lines))
 
-    lines = ["📅 *Ближайшие дедлайны:*\n"]
-    for days, f in upcoming[:10]:
-        lines.append(format_deadline_msg(f, days))
-
-    await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
-
-
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "📌 *КИНЕМАТОГРАФИСТЫ.РФ — Бот напоминаний*\n\n"
-        "Я слежу за дедлайнами кинофестивалей и напоминаю о них.\n\n"
-        "/start — подписаться на уведомления\n"
-        "/stop — отписаться\n"
-        "/list — все фестивали (нажмите /add ID)\n"
-        "/add 5 — добавить фестиваль #5\n"
-        "/remove 5 — убрать фестиваль #5\n"
-        "/track — мои отслеживаемые\n"
-        "/status — ближайшие дедлайны\n\n"
-        "Автоматические напоминания приходят за 30, 14, 7, 3 и 1 день до дедлайна."
-    )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    elif cmd in ("/help", "помощь"):
+        send_message(token, chat_id,
+            "KINEMATOGRAFISTY.RF — Napominaniya\n\n"
+            "Ya slezhu za dedlaynami kinofestival'j.\n\n"
+            "/start — podpisat'sya\n"
+            "/stop — otpisat'sya\n"
+            "/list — vse festivali\n"
+            "/add 5 — dobavit' #5\n"
+            "/remove 5 — ubrat' #5\n"
+            "/track — moi otslezhivaemye\n"
+            "/status — blizhajshie dedlayny\n\n"
+            "Napominaniya prikhodyat za 30, 14, 7, 3 i 1 den' do dedlayna."
+        )
 
 
-async def check_deadlines(context: ContextTypes.DEFAULT_TYPE):
-    """Проверяет дедлайны и отправляет напоминания подписчикам."""
+def check_deadlines(token):
     subs = load_subscribers()
     festivals = load_festivals()
     now = datetime.now(timezone.utc)
@@ -392,73 +345,66 @@ async def check_deadlines(context: ContextTypes.DEFAULT_TYPE):
                 continue
 
             if days in REMIND_DAYS:
-                sent_key = f"sent_{fid}_{days}"
+                sent_key = "sent_%d_%d" % (fid, days)
                 if user_data.get(sent_key):
                     continue
 
                 msg = format_deadline_msg(f, days)
                 try:
-                    await context.bot.send_message(
-                        chat_id=int(uid),
-                        text=msg,
-                        parse_mode="Markdown",
-                    )
+                    send_message(token, int(uid), msg)
                     user_data[sent_key] = now.isoformat()
                     save_subscribers(subs)
-                    logger.info(f"Sent reminder to {uid} for {f['name']} ({days}d)")
+                    logger.info("Reminder to %s for %s (%dd)" % (uid, f["name"], days))
                 except Exception as e:
-                    logger.error(f"Failed to send to {uid}: {e}")
+                    logger.error("Failed to send to %s: %s" % (uid, e))
 
 
-def create_example_config():
-    example = {
-        "token": "YOUR_BOT_TOKEN_FROM_BOTFATHER",
-        "check_interval_hours": 12,
-        "reminder_days": [30, 14, 7, 3, 1],
-    }
-    example_path = SCRIPT_DIR / "bot_config.example.json"
-    with open(example_path, "w", encoding="utf-8") as f:
-        json.dump(example, f, ensure_ascii=False, indent=2)
-    print(f"Создан пример конфига: {example_path}")
+def get_updates(token, offset=None):
+    params = {"timeout": 30}
+    if offset:
+        params["offset"] = offset
+    return tg_api(token, "getUpdates", params)
 
 
 def main():
     config = load_config()
 
     if not config.get("token") or config["token"] == "YOUR_BOT_TOKEN_FROM_BOTFATHER":
-        print("⚠️  Создайте bot_config.json с токеном бота.")
-        print("   Пример: python bot.py --init")
-        if "--init" in sys.argv:
-            create_example_config()
-        return
-
-    if "--init" in sys.argv:
-        create_example_config()
+        print("Sozhdajte bot_config.json s tokenom bota.")
+        print("Primer: {\"token\": \"123456:ABC...\"}")
         return
 
     token = config["token"]
-    interval_hours = config.get("check_interval_hours", 12)
+    logger.info("Bot zapushchen")
 
-    application = Application.builder().token(token).build()
+    offset = None
+    last_check = datetime.now(timezone.utc)
 
-    application.add_handler(CommandHandler("start", cmd_start))
-    application.add_handler(CommandHandler("stop", cmd_stop))
-    application.add_handler(CommandHandler("list", cmd_list))
-    application.add_handler(CommandHandler("add", cmd_add))
-    application.add_handler(CommandHandler("remove", cmd_remove))
-    application.add_handler(CommandHandler("track", cmd_track))
-    application.add_handler(CommandHandler("status", cmd_status))
-    application.add_handler(CommandHandler("help", cmd_help))
+    while True:
+        try:
+            result = get_updates(token, offset)
+            if result and result.get("ok"):
+                for update in result.get("result", []):
+                    offset = update["update_id"] + 1
+                    msg = update.get("message")
+                    if msg and msg.get("text"):
+                        chat_id = msg["chat"]["id"]
+                        text = msg["text"]
+                        logger.info("Message from %s: %s" % (chat_id, text))
+                        handle_command(token, chat_id, text)
 
-    job_queue = application.job_queue
-    job_queue.run_repeating(
-        check_deadlines,
-        interval=timedelta(hours=interval_hours),
-        first=timedelta(minutes=1),
-    )
+            now = datetime.now(timezone.utc)
+            if (now - last_check).total_seconds() >= 12 * 3600:
+                logger.info("Checking deadlines...")
+                check_deadlines(token)
+                last_check = now
 
-    logger.info(f"Бот запущен. Проверка дедлайнов каждые {interval_hours} ч.")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+        except KeyboardInterrupt:
+            logger.info("Bot ostanovlen")
+            break
+        except Exception as e:
+            logger.error("Error: %s" % e)
+            time.sleep(5)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,0 @@
-{
-  "token": "YOUR_COMMUNITY_TOKEN",
-  "group_id": 0,
-  "check_interval_hours": 12,
-  "reminder_days": [30, 14, 7, 3, 1]
-}
