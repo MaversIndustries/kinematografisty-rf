@@ -1,0 +1,7 @@
+{
+  "login": "your_login@mail.ru",
+  "password": "APP_PASSWORD_HERE",
+  "from_email": "your_login@mail.ru",
+  "check_interval_hours": 12,
+  "reminder_days": [30, 14, 7, 3, 1]
+}

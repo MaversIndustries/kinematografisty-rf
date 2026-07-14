@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>КИНЕМАТОГРАФИСТЫ.РФ — Агрегатор кинофестивалей</title>
+    <meta name="yandex-verification" content="9b0ee8ad77cf4137" />
+    <link rel="stylesheet" href="styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script type="text/javascript">
+       (function(m,e,t,r,i,k,a){m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};
+       m[i].l=1*new Date();
+       for (var j = 0; j < document.scripts.length; j++) {if (document.scripts[j].src === r) { return; }}
+       k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)})
+       (window, document, "script", "https://mc.yandex.ru/metrika/tag.js", "ym");
+       ym(110719472, "init", {
+            clickmap:true,
+            trackLinks:true,
+            accurateTrackBounce:true,
+            webvisor:true
+       });
+    </script>
+    <noscript><div><img src="https://mc.yandex.ru/watch/110719472" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+</head>
+<body>
+    <header class="header">
+        <div class="container">
+            <div class="header__inner">
+                <a href="/" class="header__logo">
+                    <span class="logo__icon">🎬</span>
+                    <span class="logo__text">КИНЕМАТОГРАФИСТЫ<span class="logo__dot">.РФ</span></span>
+                </a>
+                <nav class="header__nav">
+                    <a href="#festivals" class="nav__link nav__link--active">Фестивали</a>
+                    <a href="#about" class="nav__link">О проекте</a>
+                </nav>
+            </div>
+        </div>
+    </header>
+
+    <main class="main">
+        <section class="hero">
+            <div class="container">
+                <h1 class="hero__title">Кинофестивали<br>России и СНГ</h1>
+                <p class="hero__subtitle">Все фестивали в одном месте. Дедлайны, требования, ссылки.</p>
+            </div>
+        </section>
+
+        <section class="filters" id="filters">
+            <div class="container">
+                <div class="filters__inner">
+                    <div class="filter-group">
+                        <label class="filter-label">Статус</label>
+                        <div class="filter-buttons" data-filter="status">
+                            <button class="filter-btn filter-btn--active" data-value="all">Все</button>
+                            <button class="filter-btn" data-value="active">Активные</button>
+                            <button class="filter-btn" data-value="accepting">Приём заявок</button>
+                            <button class="filter-btn" data-value="cancelled">Закрытые</button>
+                            <button class="filter-btn" data-value="paused">Приостановленные</button>
+                            <button class="filter-btn" data-value="unknown">Требуют верификации</button>
+                        </div>
+                    </div>
+                    <div class="filter-group">
+                        <label class="filter-label">Город</label>
+                        <select class="filter-select" data-filter="city">
+                            <option value="all">Все города</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label class="filter-label">Жанр</label>
+                        <select class="filter-select" data-filter="genre">
+                            <option value="all">Все жанры</option>
+                            <option value="игровое">Игровое</option>
+                            <option value="документальное">Документальное</option>
+                            <option value="короткометражное">Короткометражное</option>
+                            <option value="анимация">Анимация</option>
+                            <option value="экспериментальное">Экспериментальное</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label class="filter-label">Поиск</label>
+                        <input type="text" class="filter-search" data-filter="search" placeholder="Название фестиваля...">
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="festivals" id="festivals">
+            <div class="container">
+                <div class="festivals__stats" id="stats"></div>
+                <div class="festivals__grid" id="festivalsGrid">
+                    <!-- Карточки генерируются через JS -->
+                </div>
+                <div class="festivals__empty" id="emptyState" style="display:none;">
+                    <p>Фестивалей по вашему запросу не найдено</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="about" id="about">
+            <div class="container">
+                <div class="about__content">
+                    <h2>О проекте</h2>
+                    <p>КИНЕМАТОГРАФИСТЫ.РФ — агрегатор кинофестивалей для российских и постсоветских кинематографистов.</p>
+                    <p>Мы собираем информацию о фестивалях в одном месте, чтобы вам не приходилось искать её по десятку сайтов.</p>
+                    <p class="about__update">Последнее обновление данных: <span id="lastUpdated"></span></p>
+                    <div class="about__cta">
+                        <p>Знаете фестиваль, которого нет в нашем списке?</p>
+                        <p class="about__cta-hint">Свяжитесь с нами, чтобы добавить фестиваль</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p class="footer__text">© 2026 КИНЕМАТОГРАФИСТЫ.РФ — Альянс медиакомпаний Makaverse</p>
+        </div>
+    </footer>
+
+    <div class="modal-overlay" id="modalOverlay">
+        <div class="modal" id="modal">
+            <button class="modal__close" id="modalClose">✕</button>
+            <div class="modal__content" id="modalContent"></div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

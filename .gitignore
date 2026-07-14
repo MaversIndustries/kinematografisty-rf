@@ -1,0 +1,8 @@
+bot_config.json
+vk_config.json
+email_config.json
+.bot_subscribers.json
+.vk_subscribers.json
+.email_subscribers.json
+.update_log.json
+__pycache__/
